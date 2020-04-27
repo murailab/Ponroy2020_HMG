@@ -2,7 +2,7 @@
 
 Disclaimer: most of these functions were written for a single purpose rather than to be widely applicable. Therefore in some cases they require a specific file structure/layout and may need minor modifications to be applied to other projects. 
 
-Scripts in this repository are exactly as used for the Ponroy2020 publication. For updates and bug-fixes please see [JBKacerovsky/ATP_pulse_analysis]('https://github.com/JBKacerovsky/ATP_pulse_analysis')
+Scripts in this repository are exactly as used for the Ponroy2020 publication. For updates and bug-fixes please see [JBKacerovsky/ATP_pulse_analysis](https://github.com/JBKacerovsky/ATP_pulse_analysis)
  
 open_save_n_channels.ijm re-saves all image files (with user specified file ending) in a folder as .tif images into a specified directory
 
