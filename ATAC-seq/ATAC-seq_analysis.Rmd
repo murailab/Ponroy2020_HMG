@@ -1,0 +1,615 @@
+---
+title: "hiPSC-derived DS astrocytes: ATAC-seq analysis"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    df_print: paged
+    keep_md: yes
+    number_sections: no
+    theme: flatly
+    toc: yes
+    toc_float: true
+---
+
+# Introduction  
+
+This document records all the ATAC-seq analysis presented in Ponroy Bally et al, 2020 including reading in peak sets from the ATAC-seq experiment and running through the DiffBind routines for assessing global changes and differential analysis. 
+
+
+```{r setup, include = FALSE}
+
+knitr::opts_chunk$set(message = TRUE,
+                      warning = FALSE,
+                      error = FALSE,
+                      cache = FALSE,
+                      cache.path = "cache/",
+                      fig.keep = "all",
+                      options(bitmapType='cairo'),
+                      dev = c("png"),
+                      fig.path = "analysis_figures/",
+                      cache.lazy = FALSE)
+
+knitr::opts_knit$set(width = 1200)
+
+```  
+# Set up
+  
+## Load libraries:
+
+```{r libraries, cache = FALSE, message = FALSE}
+
+library(magrittr)
+library(RColorBrewer)
+library(DiffBind)
+
+library(ChIPseeker)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+
+library(tidyverse)
+library(ggrepel)
+library(knitr)
+library(clusterProfiler)
+source("functions.R")
+ggplot2::theme_set(theme_pub())
+```
+
+## Set up some palettes:
+
+```{r palettes}
+
+pal_rb <- colorRampPalette(rev(RColorBrewer::brewer.pal(8, "RdBu")))(100)
+pal_geno <- c("#EB3BF7", "#93958E")
+names(pal_geno) <- c("DS", "CTL")
+
+pal_extremes <- c(rgb(173, 41, 182, maxColorValue = 255), # magenta
+                  rgb(86, 194, 57, maxColorValue = 255))  # green
+
+pal_volcano <- c(pal_extremes, "gray80")
+names(pal_volcano) <- c("Significantly less accessible",
+                        "Significantly more accessible",
+                        "Not significant")
+```
+
+# DiffBind  
+  
+## Create a sample sheet for DiffBind:
+
+```{r samplesheet}
+
+bams <- list.files("rmdup", pattern = "*.bam$", full.names = TRUE)
+peaks <- list.files("peaks", pattern = "*.narrowPeak",
+                    full.names = TRUE)
+ids <- bams %>% basename %>% str_extract('(?<=\\_)[:alnum:]+')
+
+samples <- data.frame("Cell_Line"  = ids,
+                      "Tissue"     = ids,
+                      "Replicate"  = rep(c(1, 2), each = 6),
+                      "bamReads"   = bams,
+                      "Peaks"      = peaks,
+                      "PeakCaller" = "bed") %>% 
+  mutate(SampleID = paste0(Cell_Line, "_", Replicate),
+         Condition = ifelse(Cell_Line %in% c("AG38", "ATCC", "GM04"), "DS", "CTL"))
+
+kable(bams, format = "markdown", caption="Bam Files")
+
+kable(samples, format = "markdown", caption="Sample Metadata")
+write_tsv(samples, "output/samples_table.tsv")
+
+```
+
+## Create the 'dba' object:
+
+```{r dba, message = FALSE}
+
+atac <- dba(sampleSheet = samples)
+
+atac
+
+```
+
+## Sample Heatmaps:  
+  
+Correlation heatmap shows that globally, samples don't segregate by genotype,
+but replicates are highly correlated.
+
+```{r cor_heatmap}
+
+dba.plotHeatmap(atac, ColAttributes = "Condition", colSideCols = rev(pal_geno))
+
+```
+
+## Count Reads:
+
+```{r count}
+
+# Count reads
+atac <- dba.count(atac, summits = 250, bParallel = TRUE)
+```
+
+## PCA of ATAC Counts
+```{r count_pca}
+
+#save(atac, file = "output/01-atac.dba.Rda")
+dba.plotPCA(atac, attributes=DBA_CONDITION)
+```
+
+## Differential analysis:  
+
+```{r diff, message = FALSE}
+
+# Set the contrast
+atac <- dba.contrast(atac, categories = DBA_CONDITION)
+
+# Differential analysis.
+atac <- dba.analyze(atac, bParallel = TRUE)
+atac
+
+# save(atac, file = "output/atac.dba.Rda")
+
+```
+
+## Heatmap Plot based on DB sites:  
+
+```{r cor_heatmap_db}
+
+plot(atac, contrast = 1, colSideCols = rev(pal_geno), ColAttributes = DBA_CONDITION)
+
+```
+
+## Retrieve the DB sites:  
+
+```{r db}
+
+atac_db_sites <- dba.report(atac)
+atac_db_sites$igv_friendly <- paste0("chr", seqnames(atac_db_sites), ":", start(atac_db_sites), "-", end(atac_db_sites))
+# save(atac_db_sites, file = "output/atac_db_sites.granges.Rda")
+
+```
+
+## Number of Sites with Differential Accessiblity:  
+```{r db_sites}
+
+length(atac_db_sites)
+
+```
+
+## Write a BED file with DA sites:
+
+```{r db_bed}
+ 
+# df <- data.frame(seqnames=seqnames(gr),
+#   starts=start(gr)-1,
+#   ends=end(gr),
+#   names=c(rep(".", length(gr))),
+#   scores=c(rep(".", length(gr))),
+#   strands=strand(gr))
+
+```
+
+## PCA of normalized ATAC signal and Differential Binding
+
+```{r pca}
+
+# Using normalized read counts for all binding sites
+dba.plotPCA(atac, label = DBA_CONDITION, vCols = pal_geno)
+
+# Using only the differentially-bound sites
+dba.plotPCA(atac, contrast = 1, vCols = pal_geno)
+
+```
+
+
+## Volcano and MA plots:  
+```{r volcano}
+
+dba.plotMA(atac)
+dba.plotMA(atac, bNormalized = FALSE)
+
+```
+
+
+```{r volcano2, fig.width = 8, fig.height = 5}
+
+dba.report(atac, th = 1, DataType = "DBA_DATA_FRAME") %>%
+  mutate(log10p = -log10(FDR),
+         log2fc = -Fold, # To make DS positive
+         signif = case_when(
+           FDR > 0.05 ~ "Not significant",
+           log2fc > 0 ~ "Significantly more accessible",
+           log2fc < 0 ~ "Significantly less accessible")) %>%
+  ggplot(aes(x = log2fc, y = log10p)) +
+  geom_point(aes(colour = signif), alpha = 0.8) +
+  scale_colour_manual(values = pal_volcano) +
+  #theme_pub() +
+  xlab("log2(fold change) (DS/CTL)") + ylab("-log10(adjusted p value)") 
+
+```
+
+## Annotate Site of Differential Accessiblity:
+
+```{r annotate}
+
+# First let's rename the chromosomes
+chr_ucsc <- mapSeqlevels(seqlevels(atac_db_sites), "UCSC")
+atac_db_sites <- renameSeqlevels(atac_db_sites, chr_ucsc)
+
+txdb <- TxDb.Hsapiens.UCSC.hg19.knownGene
+
+anno_db_sites <- annotatePeak(atac_db_sites, tssRegion = c(-2500, 2500), 
+                              TxDb = txdb, annoDb = "org.Hs.eg.db")
+
+# Some stats
+anno_db_sites
+
+# Get other formats
+anno_db_sites_gr <- as.GRanges(anno_db_sites)
+anno_db_sites_df <- as.data.frame(anno_db_sites)
+
+# save(anno_db_sites_gr, anno_db_sites_df, file = "output/anno_db_sites.Rda")
+
+```
+
+## Genomic compartment distribution
+```{r pie}
+plotAnnoPie(anno_db_sites,
+            col = c("#646BA8",
+              "#ef893b",
+              "#e2445e",
+              "#5E7A41",
+              "#CDD150",
+              "#FFFC63",
+              "#5DAD3B",
+              "#6E3688",
+              "#A2ACD3",
+              "#EBD9A7",
+              "#BEBEBE"))
+```
+# Peaks in promoter regions
+
+From the peak annotation, about 3% of peaks fall in the <=1kbp promoter category,
+i.e. falling within 1kbp (upstream or downstream) of the gene TSS. 6.3% fall
+within 3kbp of TSS. We'll write these out to TSV files.
+
+```{r prom_peaks}
+
+prom1kb <- anno_db_sites_df %>%
+  filter(annotation == "Promoter (<=1kb)") %>% 
+  dplyr::select(SYMBOL, everything())
+
+write_tsv(prom1kb, "output/02-atac_db_sites.1kb_promoters.tsv")
+
+```
+
+```{r prom_peaks2}
+
+# Note that this df only contains significant da sites (at an FDR threshold of 0.5)
+anno_db_sites_df %>%
+  filter(grepl("Promoter", annotation)) %>%
+  write_tsv("output/02-atac_db_sites.3kb_promoters.tsv")
+
+# How many unique genes?
+anno_db_sites_df %>%
+  filter(grepl("Promoter", annotation)) %>% 
+  .$SYMBOL %>% 
+  unique() %>% 
+  length()
+
+```
+
+## Manhattan Plot of Differntially Accessible Sites 
+### Manhattan Setup
+```{r manhattan_setup1}
+
+manhattan_df <- dba.report(atac, th = 1, DataType = "DBA_DATA_FRAME") %>%
+  mutate(log10p = -log10(FDR),
+         log2fc = -Fold, # To make DS positive
+         signif = case_when(
+           FDR > 0.05 ~ "Not significant",
+           log2fc > 0 ~ "Significantly more accessible",
+           log2fc < 0 ~ "Significantly less accessible"))
+
+```
+  
+```{r manhattan_setup2}
+
+manhattan_df <- manhattan_df %>%
+  group_by(Chr) %>% 
+  mutate(rank = rank(Start)) %>% 
+  filter(Chr %in% as.character(seq(1, 22))) %>% 
+  mutate(chromosome_name2 = as.numeric(Chr))
+
+manhattan_df <- manhattan_df %>% 
+  group_by(chromosome_name2) %>% 
+  summarise(chr_len = max(rank)) %>% 
+  mutate(tot = cumsum(chr_len) - chr_len) %>% 
+  dplyr::select(-chr_len) %>% 
+  left_join(manhattan_df, ., by = "chromosome_name2") %>% 
+  arrange(chromosome_name2, rank) %>%
+  mutate(bp_cum = rank + tot)
+
+write_tsv(manhattan_df, "output/manhattan_input.tsv")
+
+axis_df <- manhattan_df %>%
+  group_by(chromosome_name2) %>%
+  summarize(center = ( max(bp_cum) + min(bp_cum) ) / 2 ,
+            start = min(bp_cum),
+            end = max(bp_cum))
+
+```
+
+### Make Manhattan Figure:  
+```{r manhattan, fig.width = 13, fig.height = 4}
+
+manhattan_df %>%
+  mutate(group = factor(signif, levels = c("Significantly more accessible", "Significantly less accessible", "Not significant"))) %>% 
+  arrange(signif) %>% 
+  ggplot(aes(x = bp_cum, y = log2fc)) +
+  # colour background
+  annotate("rect", xmin = axis_df$start, xmax = axis_df$end,
+           ymin = -5, ymax = 5,
+           alpha = 0.2,
+           fill = rep(c("azure3", "white"), 11)) +
+  # Show all points
+  geom_point( aes(color=group), size = 1.3, alpha = 0.8) +
+  scale_colour_manual(values = pal_volcano) +
+  # custom X axis:
+  scale_x_continuous(label = axis_df$chromosome_name2, breaks = axis_df$center) +
+  scale_y_continuous(expand = c(0, 0)) + # remove space between plot area and x axis
+  # Custom the theme:
+  theme_pub() +
+  theme( 
+    # legend.position="none",
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank()
+  ) +
+  xlab("Chromosome") +
+  ylab("Fold Change") +
+  ylim(c(-5, 5)) +
+  ggtitle("Manhattan plot")
+
+```  
+
+# Prep regions for deepTools
+
+For analysis of the accessibility signal profiles in regions and genes of interest,
+we will use deepTools to generate some visualizations. As input, it requires
+regions in which to plot signal, so we generate that based on the RNA-seq and
+ATAC-seq data here.
+
+First, pull the differentially-expressed genes:
+
+```{r de_genes, message = FALSE}
+
+rnaseq <- read_tsv("../RNA-seq/output/DESeq_results.tsv")
+
+de_genes <- rnaseq %>% 
+  filter(padj < 0.05)
+
+de_genes %>% 
+  dplyr::select(chromosome_name, start_position, end_position) %>% 
+  write_tsv("output/RNAseq_de_genes.bed", col_names = FALSE)
+
+```
+
+
+Let's also take the highly DE genes, i.e. with a large fold change.
+```{r deGene_largeFC}
+de_genes %>% 
+  filter(log2FoldChange > log2(2)) %>%
+  dplyr::select(chromosome_name, start_position, end_position) %>%
+  write_tsv("output/RNAseq_de_genes.up_lfc_threshold.bed", col_names = FALSE)
+
+de_genes %>% 
+  filter(log2FoldChange < log2(2)) %>%
+  dplyr::select(chromosome_name, start_position, end_position) %>%
+  write_tsv("output/RNAseq_de_genes.down_lfc_threshold.bed", col_names = FALSE)
+```
+And the peaks:
+
+```{r db_pk_bed}
+
+seqlevelsStyle(anno_db_sites_gr) <- "NCBI"
+
+anno_db_sites_gr %>% rtracklayer::export.bed("output/atac_db_sites.bed")
+anno_db_sites_gr[seqnames(anno_db_sites_gr) == '21'] %>% rtracklayer::export.bed("output/atac_db_sites.chr21.bed")
+
+```
+
+DB peaks in promoters:
+
+```{r db_pk_prom_bed}
+
+anno_db_sites_gr[grepl("Promoter", anno_db_sites_gr$annotation)] %>%
+  rtracklayer::export.bed("output/atac_db_sites.promoters.bed")
+```
+
+
+# deepTools  
+## Mean ATAC signal 1kb upstream of differntially expressed genes
+Here we use [computeMatrix](https://deeptools.readthedocs.io/en/develop/content/tools/computeMatrix.html) to compute DA signal 1kb upstream of the TSS of differentially expressed genes. Note that the output from computematrix produces a tab delimited file with shifted headers.
+
+```{bash DEdeepTools, message=FALSE}
+./signal_upstream_DE_genes.sh
+```
+
+## Violin Plots of ATAC signal upstream of differntially expressed genes
+```{r coerce, message = FALSE}
+# read the data without a header
+atac_signal_up <- read_tsv("output/up_de_genes_matrix.tab",  skip = 3, col_names = FALSE)
+atac_signal_down <- read_tsv("output/down_de_genes_matrix.tab",  skip = 3, col_names = FALSE)
+# read the column names
+up_col_names <-read_tsv("output/up_de_genes_matrix.tab",  skip=2, col_names = FALSE, n_max = 1)
+down_col_names <-read_tsv("output/down_de_genes_matrix.tab",  skip=2, col_names = FALSE, n_max = 1)
+# add column names with first erroneous entry
+colnames(atac_signal_up) <-unlist(up_col_names[-1], use.names=FALSE)
+colnames(atac_signal_down) <-unlist(down_col_names[-1], use.names=FALSE)
+```
+
+
+
+```{r violinUp}
+atac_signal_up <- atac_signal_up %>%
+  tibble::rowid_to_column(var = "gene_idx") %>%
+  gather(sample, signal, 2:length(.)) %>%
+  separate(sample, into = c("drop", "sample"), sep = "_") %>%
+  left_join(samples, by = c("sample" = "Cell_Line"))
+
+
+atac_signal_up %>%
+  filter(signal < 200) %>%
+  group_by(Condition, gene_idx) %>%
+  summarise(signal = mean(signal)) %>%
+  ggplot(aes(x = Condition, y = signal)) +
+  geom_violin(aes(fill = Condition)) +
+  scale_fill_manual(values = pal_geno) +
+  geom_jitter(size = 0.5, alpha = 0.2) +
+  ggtitle("Upregulated genes")
+
+```
+
+```{r violinDown}
+atac_signal_down <- atac_signal_down %>%
+  tibble::rowid_to_column(var = "gene_idx") %>%
+  gather(sample, signal, 2:length(.)) %>%
+  separate(sample, into = c("drop", "sample"), sep = "_") %>%
+  left_join(samples, by = c("sample" = "Cell_Line"))
+
+atac_signal_down %>%
+  filter(signal < 200) %>%
+  group_by(Condition, gene_idx) %>%
+  summarise(signal = mean(signal)) %>%
+  ggplot(aes(x = Condition, y = signal)) +
+  geom_violin(aes(fill = Condition)) +
+  scale_fill_manual(values = pal_geno) +
+  geom_jitter(size = 0.5, alpha = 0.2) +
+  ggtitle("Downregulated genes")
+```
+# deepTools 2  
+## Annotate Diiferntailly accessible promoters
+Here we use [computeMatrix](https://deeptools.readthedocs.io/en/develop/content/tools/computeMatrix.html) to identify the genes that have differntially accessible promoters. This data will be used downstream to perform gene ontolgy analysis.
+
+```{bash promoterPeaks, message=FALSE}
+./DB_peaks_in_promoters.sh
+```
+
+
+## Read deepTools Data and join with annotations
+```{r readDeepTools, message = FALSE}
+## Calculated in March 2020
+db_prom_clust <- read_tsv("output/db_peaks.sorted_kmeans.txt") %>%
+  mutate(start = start + 1) %>%
+  mutate(igv_friendly = paste0("chr", `#chrom`, ":", start, "-", `end`)) %>%
+  left_join(anno_db_sites_df, by = "igv_friendly")
+```
+
+## Gene Ontology
+
+  
+```{r pub_GO}
+
+db_prom_clust_multiomic <- db_prom_clust %>%
+  left_join(rnaseq, by = c("SYMBOL" = "gene")) %>%
+  mutate(RNAseq_LFC = log2FoldChange) %>%
+  filter(!is.na(padj)) %>%
+  mutate(signif = ifelse(padj < 0.05, "Signif", "Not signif"))
+
+go_all2 <- enrichGO(db_prom_clust_multiomic$geneId,
+         OrgDb = "org.Hs.eg.db",
+         ont = "all",
+         readable = TRUE)
+
+# save(go_all, file = "output/02-enrichGO_results_all.Rda")
+go_all_top2 <- go_all2@result %>% 
+  rename(N_associated_genes = Count) %>%
+  mutate(log10padj = -log10(p.adjust)) %>%
+  group_by(ONTOLOGY) %>% 
+  # Get top 5 terms
+  arrange(desc(log10padj)) %>%
+  slice(1:5) %>% 
+  ungroup()
+
+go_all_top2 %>% 
+  arrange(N_associated_genes) %>% 
+  mutate(Description = factor(Description, levels = unique(.$Description))) %>% 
+  ggplot(aes(x = Description, y = N_associated_genes)) +
+  geom_bar(stat = "identity", aes(fill = log10padj), colour = "black", width = 0.5) +
+  scale_fill_gradientn(colours = RColorBrewer::brewer.pal(8, "Greens")) +
+  facet_wrap(~ ONTOLOGY, scales = "free_y", ncol = 1) +
+  ylab("Number of associated genes") + xlab("GO Term") +
+  coord_flip() +
+  theme_pub() +
+  labs(fill = "-log10 adjusted p-value (rank by p-val)") +
+  ggtitle("Calculated March 2020")
+
+
+```
+
+# Supplementary Data  
+  
+## Filter Differential Accessibilty to Differentially Expressed Genes (by RNA-seq):
+
+```{r filter_de}
+
+de_genes <- rnaseq %>% 
+  filter(padj < 0.05) %>%
+  arrange(desc(log2FoldChange))
+
+db_sites_in_de_genes <- anno_db_sites_df %>% filter(SYMBOL %in% de_genes$gene)
+
+```
+
+
+
+## Compare ATAC-seq and RNA-seq  
+
+We'll start by focusing on looking at chromatin accessibility in promoter regions of genes.
+We took differentially accesible peaks, and plot them against the RNAseq fold change
+of these genes.
+
+```{r da_sites_in_genes, fig.width = 8, fig.height = 7, dependson = 'de_genes'}
+
+# Filter and join
+multiomic <- anno_db_sites_df %>%
+  mutate(ATACseq_LFC = -Fold) %>% 
+  left_join(rnaseq, by = c("SYMBOL" = "gene")) %>% 
+  mutate(RNAseq_LFC = log2FoldChange)
+
+da_pks_in_de_genes <- multiomic %>%
+  filter(SYMBOL %in% de_genes$gene)
+
+plotATACvsRNA <- function(df, threshold = 2) {
+  
+  df <- df %>% 
+    mutate(relation = case_when((RNAseq_LFC > threshold & ATACseq_LFC > threshold) |
+                                  (RNAseq_LFC < -threshold & ATACseq_LFC < -threshold) ~ "agreement",
+                                (RNAseq_LFC > threshold & ATACseq_LFC < -threshold) |
+                                  (RNAseq_LFC < -threshold & ATACseq_LFC > threshold) ~ "disagreement",
+                                TRUE ~ "none"))
+  
+  df %>% 
+    arrange(relation) %>% 
+    ggplot(aes(x = RNAseq_LFC, y = ATACseq_LFC)) +
+    geom_point(alpha = 0.8, aes(colour = relation)) +
+    xlim(-4, 4) + ylim(-4, 4) +
+    scale_colour_manual(values = c("agreement" = "blue", "none" = "gray80", "disagreement" = "red")) +
+    geom_text_repel(data = filter(df, grepl("agreement", relation)),
+                    aes(x = RNAseq_LFC, y = ATACseq_LFC, label = SYMBOL),
+                    size = 3) +
+    theme_pub()
+  
+}
+
+multiomic %>% 
+  filter(grepl("Promoter", annotation)) %>%
+  plotATACvsRNA(threshold = 1) +
+   ggtitle("Fold change concordance in differentially accesessible peaks \nwithin 3kbp of gene TSS")
+
+```
+
+## Session Info  
+```{r session_info, cache = FALSE}
+sessionInfo()
+```
+
