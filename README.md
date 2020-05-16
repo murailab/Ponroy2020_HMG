@@ -36,6 +36,9 @@ RNA-seq and ATAC-seq were performed on human IPSC-derived astrocytes from DS and
 
 # Subdirectories  
 
+## ATP_pulse_analysis   
+Contains the calcium imaging pipeline
+
 ## RNA-seq  
 Contains the RNA-seq pipeline
   
