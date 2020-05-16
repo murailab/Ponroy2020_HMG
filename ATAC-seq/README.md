@@ -1,6 +1,6 @@
 # ATAC-seq Pipeline
   
-The following series of scripts were used to process the raw reads into the results presented in Ponroy, et. al, 2020. Preparation of DNA for ATAC-seq was performed in accordance with (ref). The raw sequence reads are available at the SRA database. 
+The following series of scripts were used to process the raw reads into the results presented in Ponroy, et. al, 2020. The raw sequence reads are available at the SRA database. 
 
 ## QC and Preprocessing
 
